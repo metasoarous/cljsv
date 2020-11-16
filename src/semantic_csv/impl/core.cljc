@@ -118,6 +118,116 @@
   :end)
 
 
+(defn str->long
+  "Translate to long from string."
+  [^String v] (-> v clojure.string/trim Long/parseLong long))
+
+
+(defn str->double
+  "Translate to double from string."
+  [^String v] (-> v clojure.string/trim Double/parseDouble double))
+
+
+(defn str->rational
+  "Translate to rational from string."
+  [^String v]
+  (if-let [result (re-find #"^\d+\/\d+$" v)]
+    (-> v
+        (clojure.string/split #"\/")
+        (#(/ (-> % first str->long)
+             (-> % second str->long))))
+    nil ;; TODO Should this fall back to using str->double?
+    ))
+
+
+(defn- test-sniff-fn [f value]
+  (try (f value)
+       (catch Exception e nil)))
+
+
+(defn- try-cast-map
+  ([^String value cast-map]
+   (try-cast-map value nil cast-map))
+  ([^String value previous-type cast-map]
+   (let [hierarchy (if previous-type
+                     ;; dropping here keeps us from going from :integer to :decimal to :integer.
+                     ;; If we promote to :decimal, we should stay there.
+                     (drop-while #(not= % previous-type) (:hierarchy cast-map))
+                     (:hierarchy cast-map))]
+     (loop [cast-type (first hierarchy)
+            todo-casters (rest hierarchy)]
+       (cond
+         (test-sniff-fn (get cast-map cast-type) value) cast-type
+         (empty? todo-casters) (if previous-type :string nil)
+         :else (recur (first todo-casters) (rest todo-casters)))))))
+
+
+(defn sniff-value
+  "Takes an input value, a previous-try path, and a sniff map.
+  The function will return the path representation (i.e. [:numeric :decimal]) of the type best suited for casting.
+  The [:string] vector is used to denote a column that we know is a string for certain.  This will be seen when a
+  column has gone from say, [:numeric :integer] and then tested again, without success. For instance, one value
+  may be '1010', and the next is '101Z'. [:string] is used to mark the column for these cases."
+  [^String value previous-try cast-rules-map]
+  (if (or (= previous-try [:string]) (empty? value))  ;; if the value is nil or an empty string, then return the previous try, else sniff.
+    previous-try
+      (if-let [[cast-class cast-type] previous-try] ;; pull the class and type out of the previous try
+        ;; if we have a previous try, we can use the class to start testing only that class
+        (let [cast-map (get cast-rules-map cast-class)]
+          (if-let [result (try-cast-map value cast-type cast-map)]
+            (if (= :string result)
+              [result]
+              [cast-class result])))
+        ;; there was no previous try.  Cycle through all the classes
+        (loop [[cast-class cast-map] (first cast-rules-map)
+               todo-class-maps (rest cast-rules-map)]
+          ;; if the result is non-nil, return a vector.
+          (if-let [result (try-cast-map value cast-map)]
+            [cast-class result]
+            (if (empty? todo-class-maps)
+              [:string] ;; if nothing has passed, we can mark this column a string.
+              (recur (first todo-class-maps) (rest todo-class-maps))))))))
+
+
+(defn sniff-vector
+  "Takes an input vector, a prevous-results vector, and a cast-rules-map.
+  The function will return a vector of paths for each index, representing the best suited cast operation per column."
+  [row-vec previous-results cast-rules-map]
+  (let [prev-res (if (empty? previous-results)
+                   (into [] (repeat (count row-vec) nil))
+                   previous-results)]
+    (mapv #(sniff-value %1 %2 cast-rules-map)
+          row-vec
+          prev-res)))
+
+
+(defn sniff-map
+  "Takes an input map, a prevous-results map, and a cast-rules-map.
+  The function will return a map of paths for each index, representing the best suited cast operation per column."
+  [row-map previous-results cast-rules-map]
+  (reduce-kv
+   #(assoc %1 %2 (sniff-value %3 (get %1 %2) cast-rules-map))
+   previous-results
+   row-map))
+
+
+(defn sniff-test
+  "Takes an input data set, with either maps or vectors.  It then tests each rows of the passed collection,
+  resulting in a single collection (based on the row level collection), providing the best suited cast operation per column.
+  Note: The data passed in should be a subset of the overall data set, not including a header row."
+  [data cast-rules-map]
+  (let [test-fn (if (map? (first data))
+                  sniff-map
+                  sniff-vector)
+        init-coll (if (map? (first data))
+                    {}
+                    [])]
+    (reduce
+     #(test-fn %2 %1 cast-rules-map)
+     init-coll
+     data)))
+
+
 ;; The following is ripped off from prismatic/plumbing:
 
 (defmacro ?>>

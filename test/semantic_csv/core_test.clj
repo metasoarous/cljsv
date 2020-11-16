@@ -58,6 +58,22 @@
              [["this" "is data"]])))))
 
 
+(deftest sniff-data-test
+  (let [data [{:int "10" :rational "3/2" :double "14.0" :other "string"}
+              {:int "23" :rational "7/1" :double "240" :other "4/10"}]
+        sniff-result {:int [:numeric :integer]
+                      :rational [:numeric :rational]
+                      :double [:numeric :decimal]
+                      :other [:string]}]
+    (testing "should return a proper sniff result"
+      (is (= (sniff-data {:do-cast false} data) sniff-result)))
+
+    (testing "should properly cast values"
+      (is (= (sniff-data data)
+             [{:int 10 :rational 3/2 :double 14.0 :other "string"}
+              {:int 23 :rational 7 :double 240.0 :other "4/10"}])))))
+
+
 (deftest cast-with-test
   (let [data [["this" "that"]
               ["1" "y"]]]

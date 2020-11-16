@@ -139,7 +139,75 @@
 ;; <br/>
 ;; Next, let's observe that `:this` and `:that` point to strings, while they should really be pointing to
 ;; numeric values.
-;; This can be addressed with the following function:
+;; This can be addressed with the following functions:
+
+
+;; ## cast-rules
+
+;; cast rules to be used in sniff-data
+;; this map should have a structure as such
+;; {:cast-class {:hierarch [:cast-type-1 :cast-type-2 ...]
+;;               :cast-type-1
+;;               :cast-type-2
+;;               ...}}
+;; The cast class defines the class of values (i.e. numeric values or date/time values).
+;; The cast type defines the semantic type within that class (i.e. integer, decimal, rational)
+(def cast-rules
+  {:numeric {:hierarchy [:integer :decimal :rational]
+             :integer impl/str->long
+             :decimal impl/str->double
+             :rational impl/str->rational}})
+
+;; <br/>
+;; ## sniff-data
+
+(declare cast-with)
+(defn sniff-data
+  "Investigates the data type of each column the rows and returns a vector of vectors.
+  Each vector points to a function within a map of functions that can be used for casting.
+  The 1-arity version of this function uses `cast-rules` for this. An optional map can be
+  passed to define the following options:
+
+  * `:do-cast` - Applies the cast-rules to each row using the `cast-with` function.
+  * `:rows-to-sniff` - An integer defining the number of rows used in sniffing for data types.
+  * `:cast-rules-map` - Map defining rules for sniffing and casting.
+  * `:cast-with-options` - Options to be passed to `cast-with`."
+  ([rows] (sniff-data {} rows))
+  ([{:keys [do-cast rows-to-sniff cast-rules-map cast-with-opts]
+     :or {do-cast true
+          rows-to-sniff 100
+          cast-rules-map cast-rules
+          cast-with-opts {}}}
+    rows]
+   (let [rules-vector (impl/sniff-test (take rows-to-sniff rows) cast-rules-map)]
+     (if do-cast
+       (let [cast-fns (if (map? (first rows))
+                        (into {} (for [[k v] rules-vector] [k (get-in cast-rules-map v)]))
+                        (zipmap (range) (map (partial get-in cast-rules-map) rules-vector)))
+             ;; remove nil functions
+             cast-fns (apply dissoc cast-fns (for [[k v] cast-fns :when (nil? v)] k))]
+         (cast-with cast-fns cast-with-opts rows))
+       rules-vector))))
+
+;; Let's try casting a numeric column using this function:
+;;
+;;     => (with-open [in-file (io/reader "test/test.csv")]
+;;          (->>
+;;            (csv/parse-csv in-file)
+;;            remove-comments
+;;            mappify
+;;            sniff-data
+;;            doall))
+;;
+;;     ({:this 1, :that 2, :more "stuff"}
+;;      {:this 2, :that 3, :more "other yeah"})
+;;
+;; Note that this function handles either map or vector rows.
+;; Note however, that one must inform `cast-with` to skip the
+;; first row when using vector data.
+;; Example -> (sniff-data {:cast-with-opts {:except-first true}} rows)
+;;
+;; <br/>
 
 
 ;; <br/>
